@@ -1,0 +1,85 @@
+import pandas as pd
+import numpy as np
+import matplotlib.pyplot as plt
+from sklearn.preprocessing import MinMaxScaler
+from sklearn.metrics import mean_squared_error, mean_absolute_error
+from keras.models import Sequential
+from keras.layers import LSTM, Dense, Dropout
+from keras.callbacks import EarlyStopping
+
+# Load the dataset
+df = pd.read_csv('building_energy.csv', parse_dates=['date'], index_col='date')
+
+# Sort by datetime
+df.sort_index(inplace=True)
+
+# Fill missing values if any
+df.fillna(method='ffill', inplace=True)
+
+# Features to use (add or remove based on your dataset)
+features = ['energy_consumption', 'temperature', 'humidity', 'wind_speed', 'solar_radiation', 'precipitation']
+
+# Normalize the dataset
+scaler = MinMaxScaler()
+scaled_data = scaler.fit_transform(df[features])
+scaled_df = pd.DataFrame(scaled_data, index=df.index, columns=features)
+
+# Convert to supervised learning format
+def create_sequences(data, target_col, window=24):
+    X, y = [], []
+    for i in range(window, len(data)):
+        X.append(data[i - window:i])
+        y.append(data[i, target_col])
+    return np.array(X), np.array(y)
+
+# Create input sequences
+target_column = features.index('energy_consumption')
+window_size = 24  # e.g., 24 hours
+X, y = create_sequences(scaled_data, target_column, window_size)
+
+# Split into train and test
+split = int(0.8 * len(X))
+X_train, X_test = X[:split], X[split:]
+y_train, y_test = y[:split], y[split:]
+
+# Build LSTM model
+model = Sequential()
+model.add(LSTM(units=64, return_sequences=True, input_shape=(X_train.shape[1], X_train.shape[2])))
+model.add(Dropout(0.2))
+model.add(LSTM(units=32))
+model.add(Dropout(0.2))
+model.add(Dense(1))
+
+model.compile(optimizer='adam', loss='mse')
+
+# Train the model
+early_stop = EarlyStopping(monitor='val_loss', patience=10, restore_best_weights=True)
+history = model.fit(X_train, y_train, epochs=100, batch_size=32,
+                    validation_split=0.2, callbacks=[early_stop], verbose=1)
+
+# Predict
+y_pred = model.predict(X_test)
+
+# Inverse transform predictions
+energy_scaler = MinMaxScaler()
+energy_scaler.min_, energy_scaler.scale_ = scaler.min_[target_column], scaler.scale_[target_column]
+y_test_inv = energy_scaler.inverse_transform(y_test.reshape(-1, 1))
+y_pred_inv = energy_scaler.inverse_transform(y_pred)
+
+# Evaluation
+rmse = np.sqrt(mean_squared_error(y_test_inv, y_pred_inv))
+mae = mean_absolute_error(y_test_inv, y_pred_inv)
+
+print(f"RMSE: {rmse:.2f}")
+print(f"MAE: {mae:.2f}")
+
+# Plot results
+plt.figure(figsize=(12, 6))
+plt.plot(y_test_inv, label='Actual')
+plt.plot(y_pred_inv, label='Predicted')
+plt.title('Energy Consumption Forecasting')
+plt.xlabel('Time Step')
+plt.ylabel('Energy Consumption (kWh)')
+plt.legend()
+plt.tight_layout()
+plt.show()
